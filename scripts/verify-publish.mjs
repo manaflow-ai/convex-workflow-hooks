@@ -18,8 +18,10 @@ if (process.env.CONVEX_WORKFLOW_ALLOW_PUBLISH !== "1") {
   failures.push("explicit CONVEX_WORKFLOW_ALLOW_PUBLISH=1 opt-in is missing");
 }
 
+const provenanceOverride =
+  process.env.npm_config_provenance ?? process.env.NPM_CONFIG_PROVENANCE;
 const provenance =
-  process.env.NPM_CONFIG_PROVENANCE ?? process.env.npm_config_provenance;
+  provenanceOverride ?? String(packageJson.publishConfig?.provenance);
 if (provenance !== "true") {
   failures.push("npm provenance must be enabled");
 }

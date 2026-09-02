@@ -34,8 +34,8 @@
     "release:guard": "node scripts/verify-publish.mjs",
     "prepublishOnly": "node scripts/verify-publish.mjs",
     "prepare": "npm run build",
-    "alpha": "npm run release:guard && npm run clean && npm ci && run-p test lint typecheck && npm version prerelease --preid alpha --no-git-tag-version && npm publish --tag alpha",
-    "release": "npm run release:guard && npm run clean && npm ci && run-p test lint typecheck && npm version patch --no-git-tag-version && npm publish"
+    "alpha": "npm run release:guard && npm run clean && npm ci && run-p test lint typecheck && npm version prerelease --preid alpha --no-git-tag-version && npm publish --provenance --tag alpha",
+    "release": "npm run release:guard && npm run clean && npm ci && run-p test lint typecheck && npm version patch --no-git-tag-version && npm publish --provenance"
   },
   "files": [
     "dist",
