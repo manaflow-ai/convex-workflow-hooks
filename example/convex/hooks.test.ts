@@ -1,10 +1,11 @@
 /// <reference types="vite/client" />
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { api, components } from "./_generated/api";
+import { components } from "./_generated/api";
 import { initConvexTest } from "./setup.test";
 
 describe("hooks", () => {
+  const secureCustomToken = "wh_0123456789abcdefABCDEFghijklmnop";
   beforeEach(async () => {
     vi.useFakeTimers();
   });
@@ -62,6 +63,47 @@ describe("hooks", () => {
     expect(found?.eventName).toBe("approval");
   });
 
+  test("HTTP webhooks validate before resuming a workflow", async () => {
+    const t = initConvexTest();
+    const workflowId = await t.mutation(components.workflow.workflow.create, {
+      workflowName: "test-workflow",
+      workflowHandle: "function://internal.webhookExample.approvalWorkflow",
+      workflowArgs: { topic: "test" },
+      startAsync: true,
+    });
+    await t.mutation(components.workflow.event.create, {
+      workflowId,
+      name: "approval",
+    });
+    const webhook = await t.mutation(components.workflow.webhook.create, {
+      workflowId,
+      eventName: "approval",
+      token: secureCustomToken,
+    });
+
+    const invalid = await t.fetch(
+      `/.well-known/workflow/webhook/${webhook.token}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision: "maybe" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "Invalid webhook payload" });
+
+    const valid = await t.fetch(
+      `/.well-known/workflow/webhook/${webhook.token}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ decision: "approved" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(valid.status).toBe(202);
+    expect(await valid.json()).toMatchObject({ success: true });
+  });
+
   test("webhook with custom token", async () => {
     const t = initConvexTest();
 
@@ -73,7 +115,7 @@ describe("hooks", () => {
     });
 
     // Create webhook with custom token
-    const customToken = "chat:test-123";
+    const customToken = secureCustomToken;
     const webhook = await t.mutation(components.workflow.webhook.create, {
       workflowId,
       eventName: "messages",
@@ -81,6 +123,58 @@ describe("hooks", () => {
     });
 
     expect(webhook.token).toBe(customToken);
+  });
+
+  test("rejects weak and path-unsafe custom tokens", async () => {
+    const t = initConvexTest();
+    const workflowId = await t.mutation(components.workflow.workflow.create, {
+      workflowName: "test-workflow",
+      workflowHandle: "function://internal.webhookExample.approvalWorkflow",
+      workflowArgs: { topic: "test" },
+      startAsync: true,
+    });
+
+    await expect(
+      t.mutation(components.workflow.webhook.create, {
+        workflowId,
+        eventName: "approval",
+        token: "short-token",
+      }),
+    ).rejects.toThrow("between 32 and 256");
+    await expect(
+      t.mutation(components.workflow.webhook.create, {
+        workflowId,
+        eventName: "approval",
+        token: `${secureCustomToken}/unsafe`,
+      }),
+    ).rejects.toThrow("unsafe URL characters");
+  });
+
+  test("enforces an optional webhook use limit", async () => {
+    const t = initConvexTest();
+    const workflowId = await t.mutation(components.workflow.workflow.create, {
+      workflowName: "test-workflow",
+      workflowHandle: "function://internal.webhookExample.approvalWorkflow",
+      workflowArgs: { topic: "test" },
+      startAsync: true,
+    });
+    const webhook = await t.mutation(components.workflow.webhook.create, {
+      workflowId,
+      eventName: "approval",
+      token: secureCustomToken,
+      maxUses: 1,
+    });
+
+    const first = await t.mutation(components.workflow.webhook.resume, {
+      token: webhook.token,
+      value: { decision: "approved" },
+    });
+    expect(first.success).toBe(true);
+    const second = await t.mutation(components.workflow.webhook.resume, {
+      token: webhook.token,
+      value: { decision: "approved" },
+    });
+    expect(second).toEqual({ success: false, error: "Webhook unavailable" });
   });
 
   test("webhook token reuse for same workflow/event", async () => {
@@ -93,7 +187,7 @@ describe("hooks", () => {
       startAsync: true,
     });
 
-    const customToken = "my-token-123";
+    const customToken = secureCustomToken;
 
     // Create first webhook
     const webhook1 = await t.mutation(components.workflow.webhook.create, {
@@ -131,7 +225,7 @@ describe("hooks", () => {
       startAsync: true,
     });
 
-    const customToken = "shared-token";
+    const customToken = secureCustomToken;
 
     // Create webhook for first workflow
     await t.mutation(components.workflow.webhook.create, {
@@ -146,7 +240,7 @@ describe("hooks", () => {
         workflowId: workflowId2,
         eventName: "approval",
         token: customToken,
-      })
+      }),
     ).rejects.toThrow("Webhook token already in use");
   });
 
@@ -190,7 +284,7 @@ describe("hooks", () => {
     });
 
     // Create an event for the workflow to wait on
-    const eventId = await t.mutation(components.workflow.event.create, {
+    await t.mutation(components.workflow.event.create, {
       name: "approval",
       workflowId,
     });
@@ -220,7 +314,7 @@ describe("hooks", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Webhook not found");
+    expect(result.error).toBe("Webhook unavailable");
   });
 
   test("cleanup webhooks for workflow", async () => {
@@ -250,7 +344,7 @@ describe("hooks", () => {
     // Cleanup all webhooks
     const cleanedCount = await t.mutation(
       components.workflow.webhook.cleanupForWorkflow,
-      { workflowId }
+      { workflowId },
     );
 
     expect(cleanedCount).toBe(3);
@@ -311,7 +405,7 @@ describe("defineHook", () => {
     expect(() =>
       approvalHook.resume("test-token", {
         decision: "invalid" as any,
-      })
+      }),
     ).toThrow("validation failed");
   });
 });
