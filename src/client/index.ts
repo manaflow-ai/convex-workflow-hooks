@@ -10,6 +10,7 @@ import {
   type FunctionArgs,
   type FunctionReference,
   type FunctionVisibility,
+  type GenericActionCtx,
   type GenericDataModel,
   type GenericMutationCtx,
   type GenericQueryCtx,
@@ -36,6 +37,17 @@ import { safeFunctionName } from "./safeFunctionName.js";
 import type { IdsToStrings, WorkflowComponent } from "./types.js";
 import type { WorkflowCtx } from "./workflowContext.js";
 import { workflowMutation } from "./workflowMutation.js";
+import {
+  assertValidWebhookToken,
+  assertWebhookValidator,
+  isWebhookTokenPathSegment,
+  MAX_WEBHOOK_USES,
+  normalizeMaxBodyBytes,
+  readWebhookBody,
+  validateWebhookPayload,
+  WebhookRequestError,
+  type WebhookPayloadValidator,
+} from "./webhookSecurity.js";
 
 export {
   vEventId,
@@ -57,6 +69,16 @@ export {
   type TypedHookOutput,
   type StandardSchemaV1,
 } from "./hooks.js";
+export {
+  DEFAULT_MAX_WEBHOOK_BODY_BYTES,
+  MAX_WEBHOOK_BODY_BYTES,
+  MAX_WEBHOOK_TOKEN_LENGTH,
+  MAX_WEBHOOK_USES,
+  MIN_WEBHOOK_TOKEN_LENGTH,
+  assertValidWebhookToken,
+  generateWebhookToken,
+  type WebhookPayloadValidator,
+} from "./webhookSecurity.js";
 
 export type CallbackOptions = {
   /**
@@ -107,6 +129,19 @@ export type WorkflowStatus =
   | { type: "completed"; result: unknown }
   | { type: "canceled" }
   | { type: "failed"; error: string };
+
+export type WebhookRouteOptions = {
+  /** URL prefix for webhook routes. */
+  prefix?: string;
+  /**
+   * Server-side payload validators keyed by `validatorKey` (or event name for
+   * records created by older versions). Every webhook request must resolve to
+   * one of these bindings.
+   */
+  validators: Readonly<Record<string, WebhookPayloadValidator>>;
+  /** Maximum request body size in bytes. Defaults to 256 KiB, capped at 1 MiB. */
+  maxBodyBytes?: number;
+};
 
 export class WorkflowManager {
   constructor(
@@ -345,105 +380,54 @@ export class WorkflowManager {
    * import { workflow } from "./example";
    *
    * const http = httpRouter();
-   * workflow.registerWebhookRoutes(http);
+   * workflow.registerWebhookRoutes(http, {
+   *   validators: {
+   *     approval: v.object({ approved: v.boolean() }),
+   *   },
+   * });
    * export default http;
    * ```
    *
    * @param http - The HTTP router to register routes on.
-   * @param options - Optional configuration.
+   * @param options - Route configuration. A validator binding is required for
+   * every event exposed over HTTP. This prevents the route from becoming an
+   * unvalidated `v.any()` ingress by accident.
    * @param options.prefix - URL prefix for webhook routes (default: "/.well-known/workflow")
+   * @param options.validators - Validators keyed by `validatorKey` or event name.
+   * @param options.maxBodyBytes - Maximum request body size (default: 256 KiB,
+   * hard cap: 1 MiB).
    */
-  registerWebhookRoutes(
-    http: HttpRouter,
-    options?: { prefix?: string },
-  ) {
-    const prefix = options?.prefix ?? "/.well-known/workflow";
+  registerWebhookRoutes(http: HttpRouter, options: WebhookRouteOptions) {
+    if (!options?.validators || Object.keys(options.validators).length === 0) {
+      throw new Error(
+        "registerWebhookRoutes requires at least one server-side validator binding",
+      );
+    }
+    for (const [key, validator] of Object.entries(options.validators)) {
+      if (!key || key.length > 128) {
+        throw new Error(
+          "Webhook validator keys must be between 1 and 128 characters",
+        );
+      }
+      assertWebhookValidator(validator);
+    }
+
+    const prefix = normalizeWebhookPrefix(options.prefix);
+    const maxBodyBytes = normalizeMaxBodyBytes(options.maxBodyBytes);
 
     // POST /{prefix}/webhook/{token} - Resume a workflow via webhook
     http.route({
       pathPrefix: `${prefix}/webhook/`,
       method: "POST",
-      handler: httpActionGeneric(async (ctx, request) => {
-        const url = new URL(request.url);
-        const pathParts = url.pathname.split("/");
-        const token = pathParts[pathParts.length - 1];
-
-        if (!token) {
-          return new Response(
-            JSON.stringify({ error: "Missing webhook token" }),
-            {
-              status: 400,
-              headers: { "Content-Type": "application/json" },
-            },
-          );
-        }
-
-        let body: unknown = null;
-        const contentType = request.headers.get("Content-Type") ?? "";
-
-        try {
-          if (contentType.includes("application/json")) {
-            body = await request.json();
-          } else if (contentType.includes("application/x-www-form-urlencoded")) {
-            const formData = await request.formData();
-            body = Object.fromEntries(formData.entries());
-          } else if (contentType.includes("text/")) {
-            body = await request.text();
-          } else {
-            // Try JSON first, fall back to text
-            const text = await request.text();
-            try {
-              body = JSON.parse(text);
-            } catch {
-              body = text;
-            }
-          }
-        } catch (error) {
-          return new Response(
-            JSON.stringify({ error: "Failed to parse request body" }),
-            {
-              status: 400,
-              headers: { "Content-Type": "application/json" },
-            },
-          );
-        }
-
-        try {
-          const result = await ctx.runMutation(this.component.webhook.resume, {
-            token,
-            value: body,
-            workpoolOptions: this.options?.workpoolOptions,
-          });
-
-          if (!result.success) {
-            return new Response(
-              JSON.stringify({ error: result.error }),
-              {
-                status: 404,
-                headers: { "Content-Type": "application/json" },
-              },
-            );
-          }
-
-          return new Response(
-            JSON.stringify({ success: true, eventId: result.eventId }),
-            {
-              status: 202,
-              headers: { "Content-Type": "application/json" },
-            },
-          );
-        } catch (error) {
-          return new Response(
-            JSON.stringify({
-              error: error instanceof Error ? error.message : "Unknown error",
-            }),
-            {
-              status: 500,
-              headers: { "Content-Type": "application/json" },
-            },
-          );
-        }
-      }),
+      handler: httpActionGeneric((ctx, request) =>
+        handleWebhookRequest(ctx, request, {
+          component: this.component,
+          validators: options.validators,
+          prefix,
+          maxBodyBytes,
+          workpoolOptions: this.options?.workpoolOptions,
+        }),
+      ),
     });
   }
 
@@ -474,7 +458,11 @@ export class WorkflowManager {
    *
    * @example Direct usage:
    * ```ts
-   * await workflow.resumeHook(ctx, "approval_abc123", { approved: true });
+   * await workflow.resumeHook(
+   *   ctx,
+   *   "wh_0123456789abcdefABCDEFghijklmnop",
+   *   { approved: true },
+   * );
    * ```
    *
    * @example With defineHook:
@@ -526,6 +514,12 @@ export class WorkflowManager {
    * @param args.workflowId - The workflow to create a webhook for.
    * @param args.eventName - The event name to trigger when the webhook is called.
    * @param args.token - Optional custom token (auto-generated if not provided).
+   * @param args.validatorKey - Key used by registerWebhookRoutes to bind the
+   * payload validator. Defaults to eventName.
+   * @param args.expiresAt - Optional absolute expiry timestamp in milliseconds.
+   * @param args.ttlMs - Optional lifetime in milliseconds. Cannot be combined
+   * with expiresAt.
+   * @param args.maxUses - Optional maximum number of accepted requests.
    * @param args.baseUrl - Optional base URL (defaults to CONVEX_SITE_URL env var).
    * @param args.prefix - Optional URL prefix (defaults to "/.well-known/workflow").
    */
@@ -535,20 +529,29 @@ export class WorkflowManager {
       workflowId: WorkflowId;
       eventName: string;
       token?: string;
+      validatorKey?: string;
+      expiresAt?: number;
+      ttlMs?: number;
+      maxUses?: number;
       baseUrl?: string;
       prefix?: string;
     },
   ): Promise<{ token: string; url: string }> {
+    const token = args.token;
+    if (token !== undefined) assertValidWebhookToken(token);
+    const prefix = normalizeWebhookPrefix(args.prefix);
+    const baseUrl = normalizeWebhookBaseUrl(args.baseUrl ?? "");
+    const expiresAt = resolveWebhookExpiry(args.expiresAt, args.ttlMs);
     const result = await ctx.runMutation(this.component.webhook.create, {
       workflowId: args.workflowId,
       eventName: args.eventName,
-      token: args.token,
+      token,
+      validatorKey: args.validatorKey,
+      expiresAt,
+      maxUses: args.maxUses,
     });
 
-    const prefix = args.prefix ?? "/.well-known/workflow";
-    // Note: baseUrl should be set by the user or from environment
-    const baseUrl = args.baseUrl ?? "";
-    const url = `${baseUrl}${prefix}/webhook/${result.token}`;
+    const url = buildWebhookUrl(baseUrl, prefix, result.token);
 
     return { token: result.token, url };
   }
@@ -590,3 +593,306 @@ type RunQueryCtx = {
 type RunMutationCtx = {
   runMutation: GenericMutationCtx<GenericDataModel>["runMutation"];
 };
+
+type WebhookActionCtx = Pick<
+  GenericActionCtx<GenericDataModel>,
+  "runQuery" | "runMutation"
+>;
+
+type WebhookBinding = {
+  eventName: string;
+  validatorKey?: string;
+  expiresAt?: number;
+  maxUses?: number;
+  useCount?: number;
+};
+
+type WebhookRouteConfig = {
+  component: WorkflowComponent;
+  validators: Readonly<Record<string, WebhookPayloadValidator>>;
+  prefix: string;
+  maxBodyBytes: number;
+  workpoolOptions?: WorkpoolOptions;
+};
+
+type WebhookLookup = {
+  binding: WebhookBinding | null;
+  serviceError: boolean;
+};
+
+type WebhookResume = {
+  success: boolean;
+  eventId?: string;
+};
+
+async function handleWebhookRequest(
+  ctx: WebhookActionCtx,
+  request: Request,
+  config: WebhookRouteConfig,
+): Promise<Response> {
+  const token = extractWebhookToken(request.url, config.prefix);
+  if (!token) return webhookResponse("Webhook unavailable", 404);
+
+  const lookup = await lookupWebhook(ctx, config.component, token);
+  if (lookup.serviceError) {
+    return webhookResponse("Webhook service unavailable", 500);
+  }
+  const binding = lookup.binding;
+  if (!binding || !isWebhookBindingActive(binding)) {
+    return webhookResponse("Webhook unavailable", 404);
+  }
+
+  const validator = resolveWebhookValidator(config.validators, binding);
+  if (!validator) return webhookResponse("Webhook configuration error", 500);
+
+  const payload = await readAndValidateWebhookBody(
+    request,
+    validator,
+    config.maxBodyBytes,
+  );
+  if (!payload.ok) return payload.response;
+
+  const resumed = await resumeWebhookRequest(
+    ctx,
+    config.component,
+    token,
+    payload.value,
+    config.workpoolOptions,
+  );
+  if (resumed.serviceError) {
+    return webhookResponse("Webhook service unavailable", 500);
+  }
+  if (!resumed.result.success)
+    return webhookResponse("Webhook unavailable", 404);
+  return webhookResponse(
+    JSON.stringify({ success: true, eventId: resumed.result.eventId }),
+    202,
+    true,
+  );
+}
+
+async function lookupWebhook(
+  ctx: WebhookActionCtx,
+  component: WorkflowComponent,
+  token: string,
+): Promise<WebhookLookup> {
+  try {
+    const binding = await ctx.runQuery(component.webhook.getByToken, { token });
+    return { binding, serviceError: false };
+  } catch {
+    return { binding: null, serviceError: true };
+  }
+}
+
+function isWebhookBindingActive(binding: WebhookBinding): boolean {
+  const now = Date.now();
+  if (!isWebhookExpiryActive(binding.expiresAt, now)) return false;
+  return isWebhookUseLimitActive(binding.maxUses, binding.useCount ?? 0);
+}
+
+function isWebhookExpiryActive(
+  expiresAt: number | undefined,
+  now: number,
+): boolean {
+  return (
+    expiresAt === undefined || (Number.isFinite(expiresAt) && expiresAt > now)
+  );
+}
+
+function isWebhookUseLimitActive(
+  maxUses: number | undefined,
+  useCount: number,
+): boolean {
+  if (maxUses === undefined) return true;
+  return (
+    Number.isSafeInteger(maxUses) &&
+    maxUses >= 1 &&
+    maxUses <= MAX_WEBHOOK_USES &&
+    Number.isSafeInteger(useCount) &&
+    useCount >= 0 &&
+    useCount < maxUses
+  );
+}
+
+function resolveWebhookValidator(
+  validators: Readonly<Record<string, WebhookPayloadValidator>>,
+  binding: WebhookBinding,
+): WebhookPayloadValidator | undefined {
+  const key = binding.validatorKey ?? binding.eventName;
+  return Object.prototype.hasOwnProperty.call(validators, key)
+    ? validators[key]
+    : undefined;
+}
+
+async function readAndValidateWebhookBody(
+  request: Request,
+  validator: WebhookPayloadValidator,
+  maxBodyBytes: number,
+): Promise<{ ok: true; value: unknown } | { ok: false; response: Response }> {
+  try {
+    const body = await readWebhookBody(request, maxBodyBytes);
+    return { ok: true, value: await validateWebhookPayload(body, validator) };
+  } catch (error) {
+    if (error instanceof WebhookRequestError) {
+      return {
+        ok: false,
+        response: webhookResponse(error.message, error.status),
+      };
+    }
+    return {
+      ok: false,
+      response: webhookResponse("Invalid webhook payload", 400),
+    };
+  }
+}
+
+async function resumeWebhookRequest(
+  ctx: WebhookActionCtx,
+  component: WorkflowComponent,
+  token: string,
+  value: unknown,
+  workpoolOptions: WorkpoolOptions | undefined,
+): Promise<
+  | { result: WebhookResume; serviceError: false }
+  | { result: null; serviceError: true }
+> {
+  try {
+    const result = await ctx.runMutation(component.webhook.resume, {
+      token,
+      value,
+      workpoolOptions,
+    });
+    return { result, serviceError: false };
+  } catch {
+    return { result: null, serviceError: true };
+  }
+}
+
+function normalizeWebhookPrefix(prefix: string | undefined): string {
+  const normalized = prefix ?? "/.well-known/workflow";
+  if (
+    !normalized.startsWith("/") ||
+    normalized.includes("?") ||
+    normalized.includes("#") ||
+    normalized.includes("\\") ||
+    containsControlCharacters(normalized)
+  ) {
+    throw new Error("Webhook prefix must be an absolute URL path");
+  }
+  const withoutTrailingSlash = normalized.replace(/\/+$/u, "");
+  if (!withoutTrailingSlash || withoutTrailingSlash.includes("//")) {
+    throw new Error("Webhook prefix contains an unsafe path");
+  }
+  return withoutTrailingSlash;
+}
+
+function buildWebhookUrl(
+  baseUrl: string,
+  prefix: string,
+  token: string,
+): string {
+  if (baseUrl === "") return `${prefix}/webhook/${token}`;
+  return `${baseUrl}${prefix}/webhook/${token}`;
+}
+
+function normalizeWebhookBaseUrl(baseUrl: string): string {
+  if (baseUrl === "") return "";
+  assertSafeWebhookBaseUrl(baseUrl);
+  const parsed = parseWebhookBaseUrl(baseUrl);
+  assertAllowedWebhookBaseUrl(parsed);
+  return baseUrl.replace(/\/+$/u, "");
+}
+
+function assertSafeWebhookBaseUrl(baseUrl: string): void {
+  if (
+    baseUrl.trim() !== baseUrl ||
+    baseUrl.includes("?") ||
+    baseUrl.includes("#") ||
+    baseUrl.includes("\\") ||
+    containsControlCharacters(baseUrl)
+  ) {
+    throw new Error("Webhook baseUrl contains unsafe characters");
+  }
+}
+
+function parseWebhookBaseUrl(baseUrl: string): URL {
+  try {
+    return new URL(baseUrl);
+  } catch {
+    throw new Error("Webhook baseUrl must be an absolute HTTP(S) URL");
+  }
+}
+
+function assertAllowedWebhookBaseUrl(parsed: URL): void {
+  const hasUnsafeProtocol =
+    parsed.protocol !== "https:" && parsed.protocol !== "http:";
+  const hasCredentials = Boolean(parsed.username || parsed.password);
+  const hasSuffix = Boolean(parsed.search || parsed.hash);
+  if (hasUnsafeProtocol || hasCredentials || hasSuffix) {
+    throw new Error(
+      "Webhook baseUrl must be an HTTP(S) URL without credentials, query, or fragment",
+    );
+  }
+}
+
+function containsControlCharacters(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function extractWebhookToken(
+  requestUrl: string,
+  prefix: string,
+): string | undefined {
+  let pathname: string;
+  try {
+    pathname = new URL(requestUrl).pathname;
+  } catch {
+    return undefined;
+  }
+  const routePrefix = `${prefix}/webhook/`;
+  if (!pathname.startsWith(routePrefix)) return undefined;
+  const token = pathname.slice(routePrefix.length);
+  if (!token || token.includes("/")) return undefined;
+  try {
+    const decodedToken = decodeURIComponent(token);
+    return isWebhookTokenPathSegment(decodedToken) ? decodedToken : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function webhookResponse(
+  body: string,
+  status: number,
+  bodyIsJson = false,
+): Response {
+  return new Response(bodyIsJson ? body : JSON.stringify({ error: body }), {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+function resolveWebhookExpiry(
+  expiresAt: number | undefined,
+  ttlMs: number | undefined,
+): number | undefined {
+  if (expiresAt !== undefined && ttlMs !== undefined) {
+    throw new Error("Specify expiresAt or ttlMs, not both");
+  }
+  if (ttlMs === undefined) return expiresAt;
+  if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) {
+    throw new Error("Webhook ttlMs must be a positive integer");
+  }
+  const expiry = Date.now() + ttlMs;
+  if (!Number.isSafeInteger(expiry)) {
+    throw new Error("Webhook ttlMs is too large");
+  }
+  return expiry;
+}

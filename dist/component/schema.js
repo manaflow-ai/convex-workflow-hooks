@@ -143,10 +143,22 @@ export const event = {
 };
 // Webhook token mapping for external HTTP webhook support
 export const webhook = {
-    token: v.string(),
+    // New rows keep only a one-way digest. `token` remains optional so legacy
+    // rows can be read and upgraded without a destructive migration.
+    token: v.optional(v.string()),
+    tokenHash: v.optional(v.string()),
     workflowId: v.id("workflows"),
     eventName: v.string(),
     createdAt: v.number(),
+    // The route uses this key to select the server-side payload validator. It is
+    // optional for records created by older versions, which fall back to
+    // eventName and are rejected if no matching route binding exists.
+    validatorKey: v.optional(v.string()),
+    // Optional lifecycle controls. Keeping these fields optional preserves old
+    // records while allowing new webhooks to enforce expiry and one-shot use.
+    expiresAt: v.optional(v.number()),
+    maxUses: v.optional(v.number()),
+    useCount: v.optional(v.number()),
 };
 export default defineSchema({
     config: defineTable({
@@ -173,6 +185,8 @@ export default defineSchema({
         error: v.string(),
     }))),
     // Webhook tokens for external HTTP access
-    webhooks: defineTable(webhook).index("token", ["token"]),
+    webhooks: defineTable(webhook)
+        .index("token", ["token"])
+        .index("tokenHash", ["tokenHash"]),
 });
 //# sourceMappingURL=schema.js.map

@@ -45,10 +45,9 @@ export interface HookOptions {
      * Unique token used to identify and resume the hook.
      * If not provided, the hook will use the event name for matching.
      *
-     * @example
-     * ```ts
-     * const hook = approvalHook.create({ token: `approval:${documentId}` });
-     * ```
+     * For HTTP access, use `workflow.createWebhook()`, which generates and
+     * stores a secure bearer token. Do not derive a token from user or document
+     * identifiers.
      */
     token?: string;
     /**
@@ -165,7 +164,7 @@ export type TypedHookOutput<T extends TypedHook<unknown, unknown>> = T extends T
  * });
  *
  * // In workflow:
- * const hook = approvalHook.create({ token: `approval:${docId}` });
+ * const hook = approvalHook.create();
  * const result = await hook; // Typed as { decision: "approved" | "rejected"; notes?: string }
  *
  * // In API route:

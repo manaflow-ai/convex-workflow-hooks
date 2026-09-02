@@ -13,6 +13,7 @@ import type { EventId, SchedulerOptions, WorkflowId } from "../types.js";
 import { safeFunctionName } from "./safeFunctionName.js";
 import type { StepRequest } from "./step.js";
 import type { Hook, HookOptions, TypedHook } from "./hooks.js";
+import { deriveHookToken } from "./webhookSecurity.js";
 
 export type RunOptions = {
   /**
@@ -108,14 +109,13 @@ export type WorkflowCtx = {
    * @example Simple hook:
    * ```ts
    * const hook = ctx.createHook<{ approved: boolean }>({ name: "approval" });
-   * console.log("Hook token:", hook.token);
    * const result = await hook;
    * ```
    *
    * @example With defineHook for type safety:
    * ```ts
    * const approvalHook = defineHook<{ approved: boolean }>();
-   * const hook = ctx.createHook(approvalHook, { token: `approval:${docId}` });
+   * const hook = ctx.createHook(approvalHook, { name: "approval" });
    * const result = await hook; // Fully typed
    * ```
    *
@@ -146,6 +146,8 @@ export function createWorkflowCtx(
   workflowId: WorkflowId,
   sender: BaseChannel<StepRequest>,
 ) {
+  let nextHookSequence = 0;
+
   return {
     workflowId,
     runQuery: async (query, args, opts?) => {
@@ -208,9 +210,11 @@ export function createWorkflowCtx(
         token = hookOrOptions.token ?? options?.token;
       }
 
-      // Generate token if not provided (use event name + random suffix)
+      // Workflow execution is replayed with a deterministic Math.random. Use
+      // the workflow's already-random ID for a stable hook identifier instead
+      // of deriving a guessable token from that PRNG.
       const actualToken =
-        token ?? `${eventName}_${Math.random().toString(36).slice(2, 14)}`;
+        token ?? deriveHookToken(workflowId, eventName, nextHookSequence++);
 
       // awaitNext uses the SAME awaitEvent mechanism - just wrapped for the Hook interface
       // This is exactly what awaitEvent does internally (see above)
@@ -238,9 +242,7 @@ export function createWorkflowCtx(
 
         // Make it thenable (can be awaited with `await hook`)
         then<TResult1 = T, TResult2 = never>(
-          onfulfilled?:
-            | ((value: T) => TResult1 | PromiseLike<TResult1>)
-            | null,
+          onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
           onrejected?:
             | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
             | null,

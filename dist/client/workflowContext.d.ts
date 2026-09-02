@@ -79,14 +79,13 @@ export type WorkflowCtx = {
      * @example Simple hook:
      * ```ts
      * const hook = ctx.createHook<{ approved: boolean }>({ name: "approval" });
-     * console.log("Hook token:", hook.token);
      * const result = await hook;
      * ```
      *
      * @example With defineHook for type safety:
      * ```ts
      * const approvalHook = defineHook<{ approved: boolean }>();
-     * const hook = ctx.createHook(approvalHook, { token: `approval:${docId}` });
+     * const hook = ctx.createHook(approvalHook, { name: "approval" });
      * const result = await hook; // Fully typed
      * ```
      *

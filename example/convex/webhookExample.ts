@@ -33,18 +33,30 @@ export const workflow = new WorkflowManager(components.workflow);
  * Type-safe approval hook.
  * The schema ensures type safety and can include validation/transformation.
  */
+export const approvalValidator = v.object({
+  decision: v.union(v.literal("approved"), v.literal("rejected")),
+  notes: v.optional(v.string()),
+});
 export const approvalHook = defineHook<{
   decision: "approved" | "rejected";
   notes?: string;
-}>();
+}>({
+  validator: approvalValidator,
+});
 
 /**
  * Type-safe message hook for iterating over multiple messages.
  */
+export const messageValidator = v.object({
+  type: v.union(v.literal("message"), v.literal("done")),
+  content: v.optional(v.string()),
+});
 export const messageHook = defineHook<{
   type: "message" | "done";
   content?: string;
-}>();
+}>({
+  validator: messageValidator,
+});
 
 // =============================================================================
 // Workflows
@@ -68,7 +80,7 @@ export const approvalWorkflow = workflow.define({
     // Step 2: Create a hook and wait for approval
     // Using createHook with defineHook for type safety
     const hook = ctx.createHook(approvalHook, { name: "approval" });
-    console.log("Waiting for approval, token:", hook.token);
+    console.log("Waiting for approval webhook");
 
     // Wait for the approval event
     const approval = await hook;
@@ -99,12 +111,9 @@ export const chatWorkflow = workflow.define({
     const messages: string[] = [];
 
     // Create a hook for receiving messages
-    const hook = ctx.createHook(messageHook, {
-      name: "messages",
-      token: `chat:${args.channelId}`,
-    });
+    const hook = ctx.createHook(messageHook, { name: "messages" });
 
-    console.log("Listening for messages, token:", hook.token);
+    console.log("Listening for message webhooks");
 
     // Iterate over incoming messages using async iterator
     for await (const msg of hook) {
@@ -140,7 +149,7 @@ export const startApprovalWorkflow = mutation({
   }),
   handler: async (
     ctx,
-    args
+    args,
   ): Promise<{
     workflowId: WorkflowId;
     webhookUrl: string;
@@ -150,7 +159,7 @@ export const startApprovalWorkflow = mutation({
     const workflowId = await workflow.start(
       ctx,
       internal.webhookExample.approvalWorkflow,
-      { topic: args.topic }
+      { topic: args.topic },
     );
 
     // Create a webhook for external approval
@@ -161,7 +170,6 @@ export const startApprovalWorkflow = mutation({
     });
 
     console.log("Workflow started:", workflowId);
-    console.log("Webhook URL:", url);
 
     return {
       workflowId,
@@ -183,7 +191,7 @@ export const startChatWorkflow = mutation({
   }),
   handler: async (
     ctx,
-    args
+    args,
   ): Promise<{
     workflowId: WorkflowId;
     webhookUrl: string;
@@ -192,15 +200,12 @@ export const startChatWorkflow = mutation({
     const workflowId = await workflow.start(
       ctx,
       internal.webhookExample.chatWorkflow,
-      { channelId: args.channelId }
+      { channelId: args.channelId },
     );
 
-    // Use a predictable token based on channel ID
-    const token = `chat:${args.channelId}`;
-    const { url } = await workflow.createWebhook(ctx, {
+    const { token, url } = await workflow.createWebhook(ctx, {
       workflowId,
       eventName: "messages",
-      token,
       baseUrl: process.env.CONVEX_SITE_URL,
     });
 

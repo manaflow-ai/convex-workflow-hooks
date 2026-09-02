@@ -701,10 +701,15 @@ export declare const event: {
     }, "required", "kind" | "stepId" | "sentAt" | "waitingAt" | "consumedAt">], "required", "kind" | "stepId" | "result" | "sentAt" | "result.kind" | "result.returnValue" | `result.returnValue.${string}` | "result.error" | "waitingAt" | "consumedAt">;
 };
 export declare const webhook: {
-    token: import("convex/values").VString<string, "required">;
+    token: import("convex/values").VString<string | undefined, "optional">;
+    tokenHash: import("convex/values").VString<string | undefined, "optional">;
     workflowId: import("convex/values").VId<import("convex/values").GenericId<"workflows">, "required">;
     eventName: import("convex/values").VString<string, "required">;
     createdAt: import("convex/values").VFloat64<number, "required">;
+    validatorKey: import("convex/values").VString<string | undefined, "optional">;
+    expiresAt: import("convex/values").VFloat64<number | undefined, "optional">;
+    maxUses: import("convex/values").VFloat64<number | undefined, "optional">;
+    useCount: import("convex/values").VFloat64<number | undefined, "optional">;
 };
 declare const _default: import("convex/server").SchemaDefinition<{
     config: import("convex/server").TableDefinition<import("convex/values").VObject<{
@@ -1309,17 +1314,28 @@ declare const _default: import("convex/server").SchemaDefinition<{
         error: import("convex/values").VString<string, "required">;
     }, "required", "error" | "workflowId" | "runResult" | "runResult.kind" | "runResult.returnValue" | `runResult.returnValue.${string}` | "runResult.error" | "generationNumber">], "required", "error" | "workflowId" | "runResult" | "workId" | "runResult.kind" | "runResult.returnValue" | `runResult.returnValue.${string}` | "runResult.error" | "context" | `context.${string}` | "generationNumber" | "result" | "result.kind" | "result.returnValue" | `result.returnValue.${string}` | "result.error">, {}, {}, {}>;
     webhooks: import("convex/server").TableDefinition<import("convex/values").VObject<{
+        token?: string | undefined;
+        tokenHash?: string | undefined;
+        validatorKey?: string | undefined;
+        expiresAt?: number | undefined;
+        maxUses?: number | undefined;
+        useCount?: number | undefined;
         workflowId: import("convex/values").GenericId<"workflows">;
-        token: string;
         eventName: string;
         createdAt: number;
     }, {
-        token: import("convex/values").VString<string, "required">;
+        token: import("convex/values").VString<string | undefined, "optional">;
+        tokenHash: import("convex/values").VString<string | undefined, "optional">;
         workflowId: import("convex/values").VId<import("convex/values").GenericId<"workflows">, "required">;
         eventName: import("convex/values").VString<string, "required">;
         createdAt: import("convex/values").VFloat64<number, "required">;
-    }, "required", "workflowId" | "token" | "eventName" | "createdAt">, {
+        validatorKey: import("convex/values").VString<string | undefined, "optional">;
+        expiresAt: import("convex/values").VFloat64<number | undefined, "optional">;
+        maxUses: import("convex/values").VFloat64<number | undefined, "optional">;
+        useCount: import("convex/values").VFloat64<number | undefined, "optional">;
+    }, "required", "workflowId" | "token" | "tokenHash" | "eventName" | "createdAt" | "validatorKey" | "expiresAt" | "maxUses" | "useCount">, {
         token: ["token", "_creationTime"];
+        tokenHash: ["tokenHash", "_creationTime"];
     }, {}, {}>;
 }, true>;
 export default _default;

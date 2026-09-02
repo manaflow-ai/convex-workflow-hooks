@@ -11,6 +11,9 @@
   "repository": "github:get-convex/workflow",
   "bugs": "https://github.com/get-convex/workflow/issues",
   "license": "Apache-2.0",
+  "publishConfig": {
+    "provenance": true
+  },
   "type": "module",
   "scripts": {
     "dev": "run-p -r 'dev:*'",
@@ -27,10 +30,12 @@
     "test:watch": "vitest --typecheck --clearScreen false",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:coverage": "vitest run --coverage --coverage.reporter=text",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "release:guard": "node scripts/verify-publish.mjs",
+    "prepublishOnly": "node scripts/verify-publish.mjs",
     "prepare": "npm run build",
-    "alpha": "npm run clean && npm ci && run-p test lint typecheck && npm version prerelease --preid alpha && npm publish --tag alpha && git push --tags",
-    "release": "npm run clean && npm ci && run-p test lint typecheck && npm version patch && npm publish && git push --tags",
-    "version": "pbcopy <<<$npm_package_version; vim CHANGELOG.md && prettier -w CHANGELOG.md && git add CHANGELOG.md"
+    "alpha": "npm run release:guard && npm run clean && npm ci && run-p test lint typecheck && npm version prerelease --preid alpha --no-git-tag-version && npm publish --tag alpha",
+    "release": "npm run release:guard && npm run clean && npm ci && run-p test lint typecheck && npm version patch --no-git-tag-version && npm publish"
   },
   "files": [
     "dist",
@@ -87,7 +92,7 @@
     "prettier": "3.7.4",
     "typescript": "5.9.3",
     "typescript-eslint": "8.50.1",
-    "vitest": "3.2.4"
+    "vitest": "3.2.7"
   },
   "types": "./dist/client/index.d.ts",
   "module": "./dist/client/index.js"

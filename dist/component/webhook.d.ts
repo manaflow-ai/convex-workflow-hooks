@@ -9,11 +9,14 @@ import type { Id } from "./_generated/dataModel.js";
  */
 export declare const create: import("convex/server").RegisteredMutation<"public", {
     token?: string | undefined;
+    validatorKey?: string | undefined;
+    expiresAt?: number | undefined;
+    maxUses?: number | undefined;
     workflowId: import("convex/values").GenericId<"workflows">;
     eventName: string;
 }, Promise<{
     token: string;
-    webhookId: import("convex/values").GenericId<"webhooks">;
+    webhookId: Id<"webhooks">;
 }>>;
 /**
  * Look up a webhook by its token.
@@ -24,6 +27,10 @@ export declare const getByToken: import("convex/server").RegisteredQuery<"public
     webhookId: import("convex/values").GenericId<"webhooks">;
     workflowId: import("convex/values").GenericId<"workflows">;
     eventName: string;
+    validatorKey: string | undefined;
+    expiresAt: number | undefined;
+    maxUses: number | undefined;
+    useCount: number | undefined;
 } | null>>;
 /**
  * Resume a workflow via webhook token.
