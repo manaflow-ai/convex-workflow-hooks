@@ -306,7 +306,10 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         }, number, Name>;
         create: FunctionReference<"mutation", "internal", {
             eventName: string;
+            expiresAt?: number;
+            maxUses?: number;
             token?: string;
+            validatorKey?: string;
             workflowId: string;
         }, {
             token: string;
@@ -316,6 +319,10 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             token: string;
         }, {
             eventName: string;
+            expiresAt?: number;
+            maxUses?: number;
+            useCount?: number;
+            validatorKey?: string;
             webhookId: string;
             workflowId: string;
         } | null, Name>;

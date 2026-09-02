@@ -28,7 +28,7 @@
  * });
  *
  * // In workflow:
- * const hook = approvalHook.create({ token: `approval:${docId}` });
+ * const hook = approvalHook.create();
  * const result = await hook; // Typed as { decision: "approved" | "rejected"; notes?: string }
  *
  * // In API route:
@@ -57,9 +57,9 @@
  * ```
  */
 export function defineHook(options) {
-    const { schema, validator, name: defaultName } = options ?? {};
+    const { schema } = options ?? {};
     return {
-        create(hookOptions) {
+        create(_hookOptions) {
             // This is a placeholder - the actual implementation is injected
             // by the workflow context when running inside a workflow
             throw new Error("`defineHook().create()` can only be called inside a workflow. " +
@@ -82,7 +82,11 @@ export function defineHook(options) {
             }
             // For Convex validators, we rely on runtime validation at the mutation level
             // The validator is used for typing, not runtime validation here
-            return { token, payload: payload, validated: false };
+            return {
+                token,
+                payload: payload,
+                validated: false,
+            };
         },
     };
 }

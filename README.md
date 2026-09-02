@@ -520,6 +520,66 @@ See [`example/convex/passingSignals.ts`](./example/convex/passingSignals.ts) for
 a complete example of creating events, passing their IDs around, and sending
 signals.
 
+### Receiving events over HTTP
+
+Webhooks are bearer credentials. Register an explicit server-side validator for
+every event before exposing the route. The route rejects unknown fields, invalid
+payloads, unsupported media types, and bodies larger than 256 KiB by default
+(with a 1 MiB hard cap) before it sends anything to the workflow. The lower
+default leaves room for the event envelope under Convex's 1 MiB stored-value
+limit.
+
+Requiring `validators` in `registerWebhookRoutes` is a deliberate breaking
+change from the unvalidated route. It prevents a forgotten binding from
+turning an HTTP endpoint into a `v.any()` ingress.
+
+```ts
+// convex/http.ts
+import { httpRouter } from "convex/server";
+import { v } from "convex/values";
+import { workflow } from "./workflows";
+
+const approvalValidator = v.object({
+  decision: v.union(v.literal("approved"), v.literal("rejected")),
+  notes: v.optional(v.string()),
+});
+
+const http = httpRouter();
+workflow.registerWebhookRoutes(http, {
+  validators: { approval: approvalValidator },
+  maxBodyBytes: 64 * 1024,
+});
+export default http;
+```
+
+Bind a webhook to the same key when creating it. Generated tokens use 256 bits
+from Web Crypto and are stored as SHA-256 digests. Custom tokens must be 32 to
+256 URL-safe characters with at least eight distinct characters. Do not log
+tokens or put them in analytics.
+
+```ts
+const { url } = await workflow.createWebhook(ctx, {
+  workflowId,
+  eventName: "approval",
+  validatorKey: "approval",
+  ttlMs: 15 * 60 * 1000,
+  maxUses: 1,
+  baseUrl: process.env.CONVEX_SITE_URL,
+});
+```
+
+`ttlMs` and `maxUses` are optional. `maxUses` accepts 1 through 1,000,000.
+Omitted limits preserve the existing multi-delivery behavior used by
+asynchronous hooks. Requests after expiry or after the use limit receive a
+generic unavailable response. Existing webhook
+records use their event name as the binding key; add a validator with that key
+or recreate the record. Records created by an older version may contain a
+plaintext token; the first successful resume or token reuse upgrades it to a
+digest and removes the plaintext value. A read-only lookup cannot migrate a
+record inside a Convex query. Legacy path-safe tokens remain readable during
+that migration, but all newly created custom tokens use the stronger rules
+above.
+
 ### Running nested workflows with `ctx.runWorkflow`
 
 Use `ctx.runWorkflow` to run another workflow as a single step in the current

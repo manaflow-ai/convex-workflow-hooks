@@ -23,7 +23,7 @@ export interface StandardSchemaV1<TInput = unknown, TOutput = TInput> {
     readonly version: 1;
     readonly vendor: string;
     readonly validate: (
-      value: unknown
+      value: unknown,
     ) =>
       | { value: TOutput; issues?: undefined }
       | { issues: readonly { message: string }[] }
@@ -42,10 +42,9 @@ export interface HookOptions {
    * Unique token used to identify and resume the hook.
    * If not provided, the hook will use the event name for matching.
    *
-   * @example
-   * ```ts
-   * const hook = approvalHook.create({ token: `approval:${documentId}` });
-   * ```
+   * For HTTP access, use `workflow.createWebhook()`, which generates and
+   * stores a secure bearer token. Do not derive a token from user or document
+   * identifiers.
    */
   token?: string;
 
@@ -84,7 +83,7 @@ export interface Hook<T = unknown> {
    */
   then<TResult1 = T, TResult2 = never>(
     onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
-    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2>;
 
   /**
@@ -145,7 +144,7 @@ export interface TypedHook<TInput, TOutput = TInput> {
    */
   resume(
     token: string,
-    payload: TInput
+    payload: TInput,
   ): { token: string; payload: TOutput; validated: boolean };
 }
 
@@ -180,7 +179,7 @@ export type TypedHookOutput<T extends TypedHook<unknown, unknown>> =
  * });
  *
  * // In workflow:
- * const hook = approvalHook.create({ token: `approval:${docId}` });
+ * const hook = approvalHook.create();
  * const result = await hook; // Typed as { decision: "approved" | "rejected"; notes?: string }
  *
  * // In API route:
@@ -224,19 +223,22 @@ export function defineHook<TInput, TOutput = TInput>(options?: {
    */
   name?: string;
 }): TypedHook<TInput, TOutput> {
-  const { schema, validator, name: defaultName } = options ?? {};
+  const { schema } = options ?? {};
 
   return {
-    create(hookOptions?: HookOptions): Hook<TOutput> {
+    create(_hookOptions?: HookOptions): Hook<TOutput> {
       // This is a placeholder - the actual implementation is injected
       // by the workflow context when running inside a workflow
       throw new Error(
         "`defineHook().create()` can only be called inside a workflow. " +
-          "Use `ctx.createHook()` or pass the hook definition to the workflow context."
+          "Use `ctx.createHook()` or pass the hook definition to the workflow context.",
       );
     },
 
-    resume(token: string, payload: TInput): { token: string; payload: TOutput; validated: boolean } {
+    resume(
+      token: string,
+      payload: TInput,
+    ): { token: string; payload: TOutput; validated: boolean } {
       // Validate with Standard Schema if provided
       if (schema?.["~standard"]) {
         const result = schema["~standard"].validate(payload);
@@ -244,7 +246,7 @@ export function defineHook<TInput, TOutput = TInput>(options?: {
         // Handle sync result
         if ("issues" in result && result.issues) {
           throw new Error(
-            `Hook payload validation failed:\n${JSON.stringify(result.issues, null, 2)}`
+            `Hook payload validation failed:\n${JSON.stringify(result.issues, null, 2)}`,
           );
         }
 
@@ -255,13 +257,17 @@ export function defineHook<TInput, TOutput = TInput>(options?: {
         // Handle async result - not ideal but we need sync for this pattern
         throw new Error(
           "Async schema validation is not supported in defineHook().resume(). " +
-            "Use workflow.resumeHook() directly with pre-validated data."
+            "Use workflow.resumeHook() directly with pre-validated data.",
         );
       }
 
       // For Convex validators, we rely on runtime validation at the mutation level
       // The validator is used for typing, not runtime validation here
-      return { token, payload: payload as unknown as TOutput, validated: false };
+      return {
+        token,
+        payload: payload as unknown as TOutput,
+        validated: false,
+      };
     },
   };
 }

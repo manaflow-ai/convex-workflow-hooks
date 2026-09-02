@@ -4,12 +4,21 @@
  */
 
 import { httpRouter } from "convex/server";
-import { workflow } from "./webhookExample";
+import {
+  approvalValidator,
+  messageValidator,
+  workflow,
+} from "./webhookExample";
 
 const http = httpRouter();
 
 // Register webhook routes for workflow resumption
 // This creates endpoints at /.well-known/workflow/webhook/{token}
-workflow.registerWebhookRoutes(http);
+workflow.registerWebhookRoutes(http, {
+  validators: {
+    approval: approvalValidator,
+    messages: messageValidator,
+  },
+});
 
 export default http;

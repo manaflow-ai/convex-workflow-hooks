@@ -5,9 +5,11 @@ import type { Step } from "../component/schema.js";
 import type { EventId, OnCompleteArgs, WorkflowId, WorkflowStep } from "../types.js";
 import type { IdsToStrings, WorkflowComponent } from "./types.js";
 import type { WorkflowCtx } from "./workflowContext.js";
+import { type WebhookPayloadValidator } from "./webhookSecurity.js";
 export { vEventId, vWorkflowId, vWorkflowStep, type EventId, type WorkflowId, type WorkflowStep, } from "../types.js";
 export type { RunOptions, WorkflowCtx } from "./workflowContext.js";
 export { defineHook, type Hook, type Webhook, type HookOptions, type WebhookOptions, type TypedHook, type TypedHookInput, type TypedHookOutput, type StandardSchemaV1, } from "./hooks.js";
+export { DEFAULT_MAX_WEBHOOK_BODY_BYTES, MAX_WEBHOOK_BODY_BYTES, MAX_WEBHOOK_TOKEN_LENGTH, MAX_WEBHOOK_USES, MIN_WEBHOOK_TOKEN_LENGTH, assertValidWebhookToken, generateWebhookToken, type WebhookPayloadValidator, } from "./webhookSecurity.js";
 export type CallbackOptions = {
     /**
      * A mutation to run after the function succeeds, fails, or is canceled.
@@ -50,6 +52,18 @@ export type WorkflowStatus = {
 } | {
     type: "failed";
     error: string;
+};
+export type WebhookRouteOptions = {
+    /** URL prefix for webhook routes. */
+    prefix?: string;
+    /**
+     * Server-side payload validators keyed by `validatorKey` (or event name for
+     * records created by older versions). Every webhook request must resolve to
+     * one of these bindings.
+     */
+    validators: Readonly<Record<string, WebhookPayloadValidator>>;
+    /** Maximum request body size in bytes. Defaults to 256 KiB, capped at 1 MiB. */
+    maxBodyBytes?: number;
 };
 export declare class WorkflowManager {
     component: WorkflowComponent;
@@ -179,17 +193,24 @@ export declare class WorkflowManager {
      * import { workflow } from "./example";
      *
      * const http = httpRouter();
-     * workflow.registerWebhookRoutes(http);
+     * workflow.registerWebhookRoutes(http, {
+     *   validators: {
+     *     approval: v.object({ approved: v.boolean() }),
+     *   },
+     * });
      * export default http;
      * ```
      *
      * @param http - The HTTP router to register routes on.
-     * @param options - Optional configuration.
+     * @param options - Route configuration. A validator binding is required for
+     * every event exposed over HTTP. This prevents the route from becoming an
+     * unvalidated `v.any()` ingress by accident.
      * @param options.prefix - URL prefix for webhook routes (default: "/.well-known/workflow")
+     * @param options.validators - Validators keyed by `validatorKey` or event name.
+     * @param options.maxBodyBytes - Maximum request body size (default: 256 KiB,
+     * hard cap: 1 MiB).
      */
-    registerWebhookRoutes(http: HttpRouter, options?: {
-        prefix?: string;
-    }): void;
+    registerWebhookRoutes(http: HttpRouter, options: WebhookRouteOptions): void;
     /**
      * Resume a workflow via a webhook token.
      * This is an alternative to using HTTP - you can call this directly from a mutation/action.
@@ -209,7 +230,11 @@ export declare class WorkflowManager {
      *
      * @example Direct usage:
      * ```ts
-     * await workflow.resumeHook(ctx, "approval_abc123", { approved: true });
+     * await workflow.resumeHook(
+     *   ctx,
+     *   "wh_0123456789abcdefABCDEFghijklmnop",
+     *   { approved: true },
+     * );
      * ```
      *
      * @example With defineHook:
@@ -252,6 +277,12 @@ export declare class WorkflowManager {
      * @param args.workflowId - The workflow to create a webhook for.
      * @param args.eventName - The event name to trigger when the webhook is called.
      * @param args.token - Optional custom token (auto-generated if not provided).
+     * @param args.validatorKey - Key used by registerWebhookRoutes to bind the
+     * payload validator. Defaults to eventName.
+     * @param args.expiresAt - Optional absolute expiry timestamp in milliseconds.
+     * @param args.ttlMs - Optional lifetime in milliseconds. Cannot be combined
+     * with expiresAt.
+     * @param args.maxUses - Optional maximum number of accepted requests.
      * @param args.baseUrl - Optional base URL (defaults to CONVEX_SITE_URL env var).
      * @param args.prefix - Optional URL prefix (defaults to "/.well-known/workflow").
      */
@@ -259,6 +290,10 @@ export declare class WorkflowManager {
         workflowId: WorkflowId;
         eventName: string;
         token?: string;
+        validatorKey?: string;
+        expiresAt?: number;
+        ttlMs?: number;
+        maxUses?: number;
         baseUrl?: string;
         prefix?: string;
     }): Promise<{

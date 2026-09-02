@@ -1,7 +1,9 @@
 import { BaseChannel } from "async-channel";
 import { parse } from "convex-helpers/validators";
 import { safeFunctionName } from "./safeFunctionName.js";
+import { deriveHookToken } from "./webhookSecurity.js";
 export function createWorkflowCtx(workflowId, sender) {
+    let nextHookSequence = 0;
     return {
         workflowId,
         runQuery: async (query, args, opts) => {
@@ -55,9 +57,12 @@ export function createWorkflowCtx(workflowId, sender) {
                 eventName = hookOrOptions.name;
                 token = hookOrOptions.token ?? options?.token;
             }
-            // Generate token if not provided (use event name + random suffix)
-            const actualToken = token ?? `${eventName}_${Math.random().toString(36).slice(2, 14)}`;
-            // Create a function to await the next event
+            // Workflow execution is replayed with a deterministic Math.random. Use
+            // the workflow's already-random ID for a stable hook identifier instead
+            // of deriving a guessable token from that PRNG.
+            const actualToken = token ?? deriveHookToken(workflowId, eventName, nextHookSequence++);
+            // awaitNext uses the SAME awaitEvent mechanism - just wrapped for the Hook interface
+            // This is exactly what awaitEvent does internally (see above)
             const awaitNext = async () => {
                 const result = await run(sender, {
                     name: eventName,
@@ -71,14 +76,18 @@ export function createWorkflowCtx(workflowId, sender) {
                 return result;
             };
             // Create the Hook object that is both thenable and async iterable
+            // The "magic" of `await hook`:
+            // 1. JS `await` checks if object has .then() method (thenable pattern)
+            // 2. Our .then() calls awaitNext() which uses the event system
+            // 3. Workflow suspends until event is sent, just like awaitEvent
             const hook = {
                 token: actualToken,
                 workflowId,
-                // Make it thenable (can be awaited)
+                // Make it thenable (can be awaited with `await hook`)
                 then(onfulfilled, onrejected) {
                     return awaitNext().then(onfulfilled, onrejected);
                 },
-                // Make it async iterable (for await...of)
+                // Make it async iterable (for `for await...of`)
                 async *[Symbol.asyncIterator]() {
                     while (true) {
                         yield await awaitNext();
